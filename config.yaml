@@ -1,0 +1,663 @@
+################################################################################
+# ESPHome Configuration -- Aertesi BMS-SP3 Fancoil Controller
+# Hardware : ESP32-C3 + RS485 TTL board
+# UART     : GPIO20 = RX (ESP),  GPIO21 = TX (ESP)
+# Protocol : Modbus RTU, 9600 baud, 8N2 (no parity, 2 stop bits -- PtY=0)
+# HA       : Auto-discovered via native ESPHome API
+#
+# ── BEFORE FLASHING ──────────────────────────────────────────────────────────
+#  1. Edit `modbus_address` to match the Adr set on your SP3 board (default 1).
+#  2. Adjust `board:` if you have a different C3 variant.
+#  3. If your RS485 board needs a manual DE/RE direction pin, uncomment
+#     `flow_control_pin` under the `modbus:` section and set the right GPIO.
+#  4. If you do NOT have a TOP3 keypad, enable the "without keypad" entities
+#     in HA (they appear disabled by default) -- see Section 10 of the manual.
+#
+# ── HOW WRITES WORK (S7) ──────────────────────────────────────────────────────
+#  S7 is explicit: ALL 8 R/W registers (addrs 1096-1103) MUST be written as
+#  ONE FC16 command. The SP3 only supports FC03 and FC16 (S5).
+#
+#  Architecture:
+#    * Template select / template number entities handle HA control.
+#      They have NO built-in Modbus write -- their set_action ONLY updates
+#      the shadow global and calls write_all_registers.
+#    * write_all_registers is the SOLE write path: FC16, addr 1096, 8 regs.
+#    * Internal modbus_controller sensors (internal: true) poll the SP3 every
+#      15 s and keep globals + template entities in sync, so any manual keypad
+#      change is reflected in HA.
+#
+#  Bus traffic: FC03 reads (polling) + FC16(8-reg) writes only.
+#               No FC06 is ever sent. No single-register FC16 is ever sent.
+################################################################################
+
+substitutions:
+  device_name: fancoil-bms-sp3
+  friendly_name: "Fancoil BMS-SP3"
+  modbus_address: "1"          # Change to your SP3 Modbus address (1-255)
+  setpoint_min: "16"           # lower limit for setpoint slider (C)
+  setpoint_max: "30"           # upper limit for setpoint slider (C)
+
+# Shadow globals -- one per R/W register, source of truth for all writes.
+# restore_value: true persists across ESP reboots so the on_boot write
+# uses the last-known state rather than factory defaults.
+
+globals:
+  - id: g_system_status       # addr 1096
+    type: int
+    restore_value: true
+    initial_value: '1'        # 1 = ON/OFF from keyboard
+  - id: g_operation_mode      # addr 1097
+    type: int
+    restore_value: true
+    initial_value: '2'        # 2 = Automatic
+  - id: g_fan_speed           # addr 1098
+    type: int
+    restore_value: true
+    initial_value: '4'        # 4 = Auto
+  - id: g_setpoint            # addr 1099  (raw x10, e.g. 210 = 21.0 C)
+    type: int
+    restore_value: true
+    initial_value: '210'      # 21.0 C
+  - id: g_setpoint_priority   # addr 1102
+    type: int
+    restore_value: true
+    initial_value: '1'        # 1 = supervision system
+  - id: g_supervision_active  # addr 1103
+    type: int
+    restore_value: false      # always boot with supervision enabled
+    initial_value: '1'
+  - id: g_no_keypad_mode      # addr 1234  (S10, RAM -- not NV)
+    type: int
+    restore_value: true
+    initial_value: '0'        # 0 = OFF
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - delay: 5s
+      - script.execute: write_all_registers
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: arduino
+
+# GPIO20/21 are the C3's default UART0 pins -- disable serial logging.
+logger:
+  baud_rate: 0
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  output_power: 10dB
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  platform: esphome
+  password: !secret ota_password
+
+uart:
+  id: modbus_uart
+  rx_pin: GPIO20
+  tx_pin: GPIO21
+  baud_rate: 9600
+  data_bits: 8
+  parity: NONE
+  stop_bits: 2              # PtY=0: no parity, 2 stop bits
+
+modbus:
+  id: modbus_bus
+  uart_id: modbus_uart
+  # flow_control_pin: GPIOX  # Uncomment if your RS485 board needs DE/RE control
+
+modbus_controller:
+  - id: fancoil
+    address: ${modbus_address}
+    modbus_id: modbus_bus
+    setup_priority: -10
+    update_interval: 15s     # 15 s poll counts as supervision signal (S9 watchdog = 60 s)
+    command_throttle: 200ms
+
+# THE ONLY WRITE PATH (S7)
+# FC16, start addr 1096 (0x0448), count 8 -- exactly as S7 requires.
+# Every set_action and the on_boot handler call this. Nothing else writes.
+
+script:
+  - id: write_all_registers
+    then:
+      - lambda: |-
+          std::vector<uint16_t> payload = {
+            (uint16_t) id(g_system_status),      // addr 1096
+            (uint16_t) id(g_operation_mode),     // addr 1097
+            (uint16_t) id(g_fan_speed),          // addr 1098
+            (uint16_t) id(g_setpoint),           // addr 1099  (x10)
+            0,                                   // addr 1100  not used
+            0,                                   // addr 1101  not used
+            (uint16_t) id(g_setpoint_priority),  // addr 1102
+            (uint16_t) id(g_supervision_active), // addr 1103  must stay 1
+          };
+          modbus_controller::ModbusCommandItem cmd =
+            modbus_controller::ModbusCommandItem::create_write_multiple_command(
+              id(fancoil), 1096, 8, payload);
+          id(fancoil)->queue_command(cmd);
+
+################################################################################
+# SENSORS
+# Group 1: read-only diagnostic sensors (temperatures, electrical, alarms).
+# Group 2: internal sensors for the 8 R/W registers -- keep globals in sync
+#          so HA reflects keypad changes; drive component.update on templates.
+################################################################################
+
+sensor:
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    name: "Air Temperature"
+    address: 1128
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    name: "Air Temperature (Keyboard Probe)"
+    address: 1066
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    entity_category: diagnostic
+    filters:
+      - multiply: 0.1
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    name: "Water Temperature"
+    address: 1129
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    name: "Active Setpoint"
+    address: 1239
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    entity_category: diagnostic
+    filters:
+      - multiply: 0.1
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    name: "PWM AO1 Output"
+    address: 1238
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    state_class: measurement
+    accuracy_decimals: 1
+    entity_category: diagnostic
+    filters:
+      - multiply: 0.1
+
+  # Internal read-back sensors -- update globals and refresh template entities
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    id: raw_system_status
+    address: 1096
+    register_type: holding
+    value_type: U_WORD
+    internal: true
+    on_value:
+      then:
+        - globals.set:
+            id: g_system_status
+            value: !lambda 'return (int)x;'
+        - component.update: ctrl_system_status
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    id: raw_operation_mode
+    address: 1097
+    register_type: holding
+    value_type: U_WORD
+    internal: true
+    on_value:
+      then:
+        - globals.set:
+            id: g_operation_mode
+            value: !lambda 'return (int)x;'
+        - component.update: ctrl_operation_mode
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    id: raw_fan_speed
+    address: 1098
+    register_type: holding
+    value_type: U_WORD
+    internal: true
+    on_value:
+      then:
+        - globals.set:
+            id: g_fan_speed
+            value: !lambda 'return (int)x;'
+        - component.update: ctrl_fan_speed
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    id: raw_setpoint
+    address: 1099
+    register_type: holding
+    value_type: S_WORD
+    internal: true
+    on_value:
+      then:
+        - globals.set:
+            id: g_setpoint
+            value: !lambda 'return (int)x;'
+        - component.update: ctrl_setpoint
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    id: raw_setpoint_priority
+    address: 1102
+    register_type: holding
+    value_type: U_WORD
+    internal: true
+    on_value:
+      then:
+        - globals.set:
+            id: g_setpoint_priority
+            value: !lambda 'return (int)x;'
+        - component.update: ctrl_setpoint_priority
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    id: raw_supervision_active
+    address: 1103
+    register_type: holding
+    value_type: U_WORD
+    internal: true
+    on_value:
+      then:
+        - globals.set:
+            id: g_supervision_active
+            value: !lambda 'return (int)x;'
+        - component.update: ctrl_supervision_active
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    id: raw_no_keypad_mode
+    address: 1234
+    register_type: holding
+    value_type: U_WORD
+    internal: true
+    on_value:
+      then:
+        - globals.set:
+            id: g_no_keypad_mode
+            value: !lambda 'return (int)x;'
+        - component.update: ctrl_no_keypad_mode_fan
+
+################################################################################
+# BINARY SENSORS
+################################################################################
+
+binary_sensor:
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    name: "Plant Running"
+    address: 1227
+    register_type: holding
+    bitmask: 0x1
+    device_class: running
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    name: "Valve 1"
+    address: 1164
+    register_type: holding
+    bitmask: 0x1
+    device_class: opening
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    name: "Valve 2"
+    address: 1165
+    register_type: holding
+    bitmask: 0x1
+    device_class: opening
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    name: "Digital Input 1"
+    address: 1163
+    register_type: holding
+    bitmask: 0x1
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    name: "Too Cool Alarm"
+    address: 1130
+    register_type: holding
+    bitmask: 0x1
+    device_class: problem
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    name: "Hot Start"
+    address: 1131
+    register_type: holding
+    bitmask: 0x1
+
+################################################################################
+# TEXT SENSORS
+################################################################################
+
+text_sensor:
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    name: "Fan Output Speed"
+    address: 1166
+    register_type: holding
+    raw_encode: HEXBYTES
+    entity_category: diagnostic
+    lambda: |-
+      uint16_t val = modbus_controller::word_from_hex_str(x, 0);
+      switch (val) {
+        case 0: return std::string("OFF");
+        case 1: return std::string("Min");
+        case 2: return std::string("Med");
+        case 3: return std::string("Max");
+        default: return str_sprintf("Unknown (%d)", val);
+      }
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    name: "Heat/Cool Status"
+    address: 1229
+    register_type: holding
+    raw_encode: HEXBYTES
+    entity_category: diagnostic
+    lambda: |-
+      uint16_t val = modbus_controller::word_from_hex_str(x, 0);
+      switch (val) {
+        case 0: return std::string("Summer (Cooling)");
+        case 1: return std::string("Winter (Heating)");
+        default: return str_sprintf("Unknown (%d)", val);
+      }
+
+################################################################################
+# SELECT  (template -- no Modbus write of their own)
+# set_action: update global -> write_all_registers (FC16, 8 regs, addr 1096)
+# lambda:     reads global  -> displayed state in HA always reflects reality
+################################################################################
+
+select:
+
+  - platform: template
+    name: "System Status"
+    id: ctrl_system_status
+    update_interval: never
+    options:
+      - "OFF Forced"
+      - "ON/OFF from Keyboard"
+      - "ON Forced"
+    lambda: |-
+      if (id(g_system_status) == 0) return std::string("OFF Forced");
+      if (id(g_system_status) == 2) return std::string("ON Forced");
+      return std::string("ON/OFF from Keyboard");
+    set_action:
+      - globals.set:
+          id: g_system_status
+          value: !lambda |-
+            if (x == "OFF Forced") return 0;
+            if (x == "ON Forced")  return 2;
+            return 1;
+      - script.execute: write_all_registers
+
+  - platform: template
+    name: "Operation Mode"
+    id: ctrl_operation_mode
+    update_interval: never
+    options:
+      - "Summer (Cooling)"
+      - "Winter (Heating)"
+      - "Automatic"
+    lambda: |-
+      if (id(g_operation_mode) == 0) return std::string("Summer (Cooling)");
+      if (id(g_operation_mode) == 1) return std::string("Winter (Heating)");
+      return std::string("Automatic");
+    set_action:
+      - globals.set:
+          id: g_operation_mode
+          value: !lambda |-
+            if (x == "Summer (Cooling)") return 0;
+            if (x == "Winter (Heating)") return 1;
+            return 2;
+      - script.execute: write_all_registers
+
+  - platform: template
+    name: "Fan Speed"
+    id: ctrl_fan_speed
+    update_interval: never
+    options:
+      - "From Keyboard"
+      - "Min"
+      - "Med"
+      - "Max"
+      - "Auto"
+    lambda: |-
+      switch (id(g_fan_speed)) {
+        case 0:  return std::string("From Keyboard");
+        case 1:  return std::string("Min");
+        case 2:  return std::string("Med");
+        case 3:  return std::string("Max");
+        default: return std::string("Auto");
+      }
+    set_action:
+      - globals.set:
+          id: g_fan_speed
+          value: !lambda |-
+            if (x == "From Keyboard") return 0;
+            if (x == "Min")           return 1;
+            if (x == "Med")           return 2;
+            if (x == "Max")           return 3;
+            return 4;
+      - script.execute: write_all_registers
+
+  # "Supervision System" -> HA controls setpoint; "Keyboard" -> TOP3 keypad.
+
+  - platform: template
+    name: "Setpoint Priority"
+    id: ctrl_setpoint_priority
+    update_interval: never
+    entity_category: config
+    options:
+      - "Keyboard"
+      - "Supervision System"
+    lambda: |-
+      if (id(g_setpoint_priority) == 0) return std::string("Keyboard");
+      return std::string("Supervision System");
+    set_action:
+      - globals.set:
+          id: g_setpoint_priority
+          value: !lambda |-
+            if (x == "Keyboard") return 0;
+            return 1;
+      - script.execute: write_all_registers
+
+  # Seeded to "Enabled" on boot; 15 s polling keeps the 60 s watchdog fed (S9).
+
+  - platform: template
+    name: "Supervision Control"
+    id: ctrl_supervision_active
+    update_interval: never
+    entity_category: config
+    options:
+      - "Disabled"
+      - "Enabled"
+    lambda: |-
+      if (id(g_supervision_active) == 0) return std::string("Disabled");
+      return std::string("Enabled");
+    set_action:
+      - globals.set:
+          id: g_supervision_active
+          value: !lambda |-
+            if (x == "Disabled") return 0;
+            return 1;
+      - script.execute: write_all_registers
+
+  # S10 -- FUNCTION WITHOUT KEYPAD
+  # Register 1235 (addr 1234): RAM -- resets on SP3 power cycle.
+  # Written as a separate single FC16 to addr 1234 (correct per S10 --
+  # NOT part of the 8-register S7 block). Enable in HA if no TOP3 keypad.
+
+  - platform: template
+    name: "[No Keypad] Mode + Fan"
+    id: ctrl_no_keypad_mode_fan
+    update_interval: never
+    disabled_by_default: true
+    entity_category: config
+    options:
+      - "OFF"
+      - "Auto / Min"
+      - "Auto / Med"
+      - "Auto / Max"
+      - "Auto / Auto"
+      - "Winter / Min"
+      - "Winter / Med"
+      - "Winter / Max"
+      - "Winter / Auto"
+      - "Summer / Min"
+      - "Summer / Med"
+      - "Summer / Max"
+      - "Summer / Auto"
+    lambda: |-
+      switch (id(g_no_keypad_mode)) {
+        case   0: return std::string("OFF");
+        case   1: return std::string("Auto / Min");
+        case   2: return std::string("Auto / Med");
+        case   3: return std::string("Auto / Max");
+        case   4: return std::string("Auto / Auto");
+        case 257: return std::string("Winter / Min");
+        case 258: return std::string("Winter / Med");
+        case 259: return std::string("Winter / Max");
+        case 260: return std::string("Winter / Auto");
+        case 513: return std::string("Summer / Min");
+        case 514: return std::string("Summer / Med");
+        case 515: return std::string("Summer / Max");
+        default:  return std::string("Summer / Auto");
+      }
+    set_action:
+      - globals.set:
+          id: g_no_keypad_mode
+          value: !lambda |-
+            if (x == "OFF")           return 0;
+            if (x == "Auto / Min")    return 1;
+            if (x == "Auto / Med")    return 2;
+            if (x == "Auto / Max")    return 3;
+            if (x == "Auto / Auto")   return 4;
+            if (x == "Winter / Min")  return 257;
+            if (x == "Winter / Med")  return 258;
+            if (x == "Winter / Max")  return 259;
+            if (x == "Winter / Auto") return 260;
+            if (x == "Summer / Min")  return 513;
+            if (x == "Summer / Med")  return 514;
+            if (x == "Summer / Max")  return 515;
+            return 516;
+      - lambda: |-
+          std::vector<uint16_t> payload = { (uint16_t) id(g_no_keypad_mode) };
+          modbus_controller::ModbusCommandItem cmd =
+            modbus_controller::ModbusCommandItem::create_write_multiple_command(
+              id(fancoil), 1234, 1, payload);
+          id(fancoil)->queue_command(cmd);
+
+# Re-assert the no-keypad RAM register after SP3 power cycle.
+# Register 1235 resets on power loss; re-send every 45 s via FC16.
+# has_state() is false until the first poll, so this no-ops when not in use.
+
+interval:
+  - interval: 45s
+    then:
+      - if:
+          condition:
+            lambda: 'return id(ctrl_no_keypad_mode_fan).has_state();'
+          then:
+            - lambda: |-
+                std::vector<uint16_t> payload = { (uint16_t) id(g_no_keypad_mode) };
+                modbus_controller::ModbusCommandItem cmd =
+                  modbus_controller::ModbusCommandItem::create_write_multiple_command(
+                    id(fancoil), 1234, 1, payload);
+                id(fancoil)->queue_command(cmd);
+
+################################################################################
+# NUMBER  (template -- no Modbus write of its own)
+# set_action: update g_setpoint -> write_all_registers (FC16, 8 regs)
+# lambda:     g_setpoint / 10.0 -> displayed value in HA
+#
+# No-keypad NV setpoint (addr 32779 / reg 32780):
+# S10 shows this as a standalone single FC16 -- not part of the S7 block.
+# modbus_controller number uses FC16 natively, which is correct here.
+################################################################################
+
+number:
+
+  - platform: template
+    name: "Temperature Setpoint"
+    id: ctrl_setpoint
+    min_value: ${setpoint_min}
+    max_value: ${setpoint_max}
+    step: 0.5
+    unit_of_measurement: "°C"
+    device_class: temperature
+    mode: slider
+    update_interval: never
+    lambda: 'return id(g_setpoint) / 10.0f;'
+    set_action:
+      - globals.set:
+          id: g_setpoint
+          value: !lambda 'return (int)(x * 10.0f);'
+      - script.execute: write_all_registers
+
+  - platform: modbus_controller
+    modbus_controller_id: fancoil
+    name: "[No Keypad] Temperature Setpoint"
+    address: 32779
+    register_type: holding
+    value_type: S_WORD
+    min_value: ${setpoint_min}
+    max_value: ${setpoint_max}
+    step: 0.5
+    multiply: 10
+    unit_of_measurement: "°C"
+    device_class: temperature
+    mode: slider
+    disabled_by_default: true
