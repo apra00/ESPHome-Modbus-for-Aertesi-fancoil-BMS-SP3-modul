@@ -108,8 +108,8 @@ uart:
   tx_pin: GPIO21
   baud_rate: 9600
   data_bits: 8
-  parity: NONE
-  stop_bits: 2              # PtY=0: no parity, 2 stop bits
+  parity: ODD
+  stop_bits: 1              # PtY=0: no parity, 2 stop bits
 
 modbus:
   id: modbus_bus
