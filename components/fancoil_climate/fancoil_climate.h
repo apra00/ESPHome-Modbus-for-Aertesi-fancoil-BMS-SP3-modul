@@ -8,31 +8,17 @@ namespace fancoil_climate {
 
 class FancoilClimate;
 
-// Trigger fired after control() updates state -- YAML automation calls
-// write_all_registers in response.
 class FancoilClimateControlTrigger : public Trigger<const climate::ClimateCall &> {
  public:
   explicit FancoilClimateControlTrigger(FancoilClimate *parent);
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FancoilClimate
-//
-// Plain ESPHome climate component for the Aertesi BMS-SP3 fancoil.
-// - Single target_temperature (no low/high range)
-// - Modes  : off, heat, cool, heat_cool
-// - Fan    : auto, low, medium, high
-// - No built-in hysteresis -- SP3 owns thermal control
-//
-// control() updates the shadow globals and fires on_control so the YAML
-// automation can call write_all_registers.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Forward-declare globals set in the YAML.
+// Forward-declare globals and write-pending counter defined in the YAML.
 extern int g_system_status;
 extern int g_operation_mode;
 extern int g_fan_speed;
 extern int g_setpoint;
+extern int g_write_pending;   // <-- declared here, defined in YAML globals
 
 class FancoilClimate : public climate::Climate, public Component {
  public:
@@ -62,6 +48,11 @@ class FancoilClimate : public climate::Climate, public Component {
 
   void control(const climate::ClimateCall &call) override {
     bool changed = false;
+
+    // ── Arm the write-pending guard FIRST, synchronously ────────────────────
+    // This happens before the script is even queued, so no poll can slip in
+    // between control() and write_all_registers executing.
+    g_write_pending = 6;
 
     // ── Mode → system_status + operation_mode ────────────────────────────────
     if (call.get_mode().has_value()) {
@@ -120,7 +111,6 @@ class FancoilClimate : public climate::Climate, public Component {
   FancoilClimateControlTrigger *control_trigger_{nullptr};
 };
 
-// ── Trigger implementation ────────────────────────────────────────────────────
 inline FancoilClimateControlTrigger::FancoilClimateControlTrigger(FancoilClimate *parent) {
   parent->register_control_trigger(this);
 }
