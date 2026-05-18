@@ -6,14 +6,11 @@
 namespace esphome {
 namespace fancoil_climate {
 
-// Own trigger class -- avoids ID collision with the core climate::ControlTrigger
+// Trigger fired manually from FancoilClimate::control().
+// Lives in our own namespace -- no connection to core climate automation.
 class FancoilControlTrigger : public Trigger<climate::ClimateCall &> {
  public:
-  explicit FancoilControlTrigger(climate::Climate *climate) {
-    climate->add_on_control_callback([this](climate::ClimateCall &call) {
-      this->trigger(call);
-    });
-  }
+  explicit FancoilControlTrigger(climate::Climate *) {}  // parent unused
 };
 
 class FancoilClimate : public climate::Climate, public Component {
@@ -41,8 +38,11 @@ class FancoilClimate : public climate::Climate, public Component {
     return t;
   }
 
+  void add_control_trigger(FancoilControlTrigger *t) {
+    control_triggers_.push_back(t);
+  }
+
   // Called from raw_* sensor on_value lambdas after a successful poll.
-  // The caller checks g_write_lock before calling this.
   void sync_from_globals(int sys, int op_mode, int fan, int sp_raw, float cur_temp) {
     current_temperature = cur_temp;
     target_temperature  = sp_raw / 10.0f;
@@ -69,10 +69,8 @@ class FancoilClimate : public climate::Climate, public Component {
   }
 
  protected:
-  // on_control automation (built by climate.py) fires via FancoilControlTrigger
-  // BEFORE control() is called, so globals are already updated when we arrive
-  // here. Apply the call fields for an immediate optimistic HA card update.
   void control(const climate::ClimateCall &call) override {
+    // Optimistic update so HA card reflects the change immediately.
     if (call.get_mode().has_value())
       this->mode = *call.get_mode();
     if (call.get_fan_mode().has_value())
@@ -80,7 +78,14 @@ class FancoilClimate : public climate::Climate, public Component {
     if (call.get_target_temperature().has_value())
       this->target_temperature = *call.get_target_temperature();
     publish_state();
+
+    // Fire all registered on_control automations (update globals + FC16 write).
+    for (auto *t : control_triggers_)
+      t->trigger(const_cast<climate::ClimateCall &>(call));
   }
+
+ private:
+  std::vector<FancoilControlTrigger *> control_triggers_;
 };
 
 }  // namespace fancoil_climate
