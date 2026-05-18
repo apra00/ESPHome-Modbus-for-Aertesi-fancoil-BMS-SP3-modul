@@ -1,28 +1,26 @@
 #pragma once
 #include "esphome/core/component.h"
-#include "esphome/core/automation.h"
 #include "esphome/components/climate/climate.h"
+#include <functional>
 
 namespace esphome {
 namespace fancoil_climate {
 
-class FancoilClimate;
-
-class FancoilClimateControlTrigger : public Trigger<const climate::ClimateCall &> {
- public:
-  explicit FancoilClimateControlTrigger(FancoilClimate *parent);
-};
-
-// Forward-declare globals and write-pending counter defined in the YAML.
+// Forward-declare globals defined in the YAML.
 extern int g_system_status;
 extern int g_operation_mode;
 extern int g_fan_speed;
 extern int g_setpoint;
-extern int g_write_pending;   // <-- declared here, defined in YAML globals
+extern int g_write_pending;
 
 class FancoilClimate : public climate::Climate, public Component {
  public:
   void setup() override {}
+
+  // Called once from the YAML on_boot lambda to wire up write_all_registers.
+  void set_write_callback(std::function<void()> cb) {
+    write_cb_ = std::move(cb);
+  }
 
   climate::ClimateTraits traits() override {
     auto t = climate::ClimateTraits();
@@ -49,12 +47,10 @@ class FancoilClimate : public climate::Climate, public Component {
   void control(const climate::ClimateCall &call) override {
     bool changed = false;
 
-    // ── Arm the write-pending guard FIRST, synchronously ────────────────────
-    // This happens before the script is even queued, so no poll can slip in
-    // between control() and write_all_registers executing.
+    // Arm the write-pending guard synchronously before anything else,
+    // so no Modbus poll can slip in and overwrite globals.
     g_write_pending = 6;
 
-    // ── Mode → system_status + operation_mode ────────────────────────────────
     if (call.get_mode().has_value()) {
       this->mode = *call.get_mode();
       changed = true;
@@ -78,7 +74,6 @@ class FancoilClimate : public climate::Climate, public Component {
       }
     }
 
-    // ── Fan mode → fan_speed ─────────────────────────────────────────────────
     if (call.get_fan_mode().has_value()) {
       this->fan_mode = *call.get_fan_mode();
       changed = true;
@@ -90,7 +85,6 @@ class FancoilClimate : public climate::Climate, public Component {
       }
     }
 
-    // ── Target temperature → setpoint (x10) ──────────────────────────────────
     if (call.get_target_temperature().has_value()) {
       this->target_temperature = *call.get_target_temperature();
       changed = true;
@@ -99,21 +93,14 @@ class FancoilClimate : public climate::Climate, public Component {
 
     if (changed) {
       this->publish_state();
-      this->control_trigger_->trigger(call);
+      // Call write_all_registers directly -- no script scheduling delay.
+      if (write_cb_) write_cb_();
     }
   }
 
-  void register_control_trigger(FancoilClimateControlTrigger *t) {
-    this->control_trigger_ = t;
-  }
-
  protected:
-  FancoilClimateControlTrigger *control_trigger_{nullptr};
+  std::function<void()> write_cb_;
 };
-
-inline FancoilClimateControlTrigger::FancoilClimateControlTrigger(FancoilClimate *parent) {
-  parent->register_control_trigger(this);
-}
 
 }  // namespace fancoil_climate
 }  // namespace esphome
