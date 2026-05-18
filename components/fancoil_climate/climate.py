@@ -1,7 +1,8 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import climate
-from esphome.const import CONF_ID
+from esphome.automation import validate_automation, build_automation
+from esphome.const import CONF_ID, CONF_TRIGGER_ID
 
 DEPENDENCIES = ["climate"]
 AUTO_LOAD = ["climate"]
@@ -21,9 +22,9 @@ on_control_trigger = fancoil_climate_ns.class_(
 CONFIG_SCHEMA = climate._CLIMATE_SCHEMA.extend(
     {
         cv.GenerateID(): cv.declare_id(FancoilClimate),
-        cv.Optional("on_control"): cg.validate_automation(
+        cv.Optional("on_control"): validate_automation(
             {
-                cv.GenerateID(cg.CONF_TRIGGER_ID): cv.declare_id(on_control_trigger),
+                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(on_control_trigger),
             }
         ),
     }
@@ -36,5 +37,5 @@ async def to_code(config):
     await climate.register_climate(var, config)
 
     for conf in config.get("on_control", []):
-        trigger = cg.new_Pvariable(conf[cg.CONF_TRIGGER_ID], var)
-        await cg.build_automation(trigger, [(ClimateCallConstRef, "x")], conf)
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await build_automation(trigger, [(ClimateCallConstRef, "x")], conf)
