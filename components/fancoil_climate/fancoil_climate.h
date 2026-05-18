@@ -1,9 +1,20 @@
 #pragma once
 #include "esphome/core/component.h"
+#include "esphome/core/automation.h"
 #include "esphome/components/climate/climate.h"
 
 namespace esphome {
 namespace fancoil_climate {
+
+// Own trigger class -- avoids ID collision with the core climate::ControlTrigger
+class FancoilControlTrigger : public Trigger<climate::ClimateCall &> {
+ public:
+  explicit FancoilControlTrigger(climate::Climate *climate) {
+    climate->add_on_control_callback([this](climate::ClimateCall &call) {
+      this->trigger(call);
+    });
+  }
+};
 
 class FancoilClimate : public climate::Climate, public Component {
  public:
@@ -58,13 +69,9 @@ class FancoilClimate : public climate::Climate, public Component {
   }
 
  protected:
-  // control() is called by the ESPHome framework when HA sends a command.
-  // The on_control automation (built by climate.py -> build_automation) is
-  // wired via ControlTrigger which fires from Climate::perform() BEFORE
-  // control() is called, so by the time we arrive here the globals are
-  // already updated and write_all_registers has been queued.
-  // We apply the ClimateCall fields to our own published state so HA gets
-  // an immediate optimistic update without waiting for the next 15 s poll.
+  // on_control automation (built by climate.py) fires via FancoilControlTrigger
+  // BEFORE control() is called, so globals are already updated when we arrive
+  // here. Apply the call fields for an immediate optimistic HA card update.
   void control(const climate::ClimateCall &call) override {
     if (call.get_mode().has_value())
       this->mode = *call.get_mode();
