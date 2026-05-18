@@ -18,37 +18,37 @@ class FancoilClimate : public climate::Climate, public Component {
   void setup() override {}
 
   // Called once from the YAML on_boot lambda to wire up write_all_registers.
-  void set_write_callback(std::function<void()> cb) {
+  void set_write_cb(std::function<void()> cb) {
     write_cb_ = std::move(cb);
   }
 
   climate::ClimateTraits traits() override {
     auto t = climate::ClimateTraits();
-    t.set_supports_current_temperature(true);
-    t.set_supports_two_point_target_temperature(false);
+
+    t.add_supported_mode(climate::CLIMATE_MODE_OFF);
+    t.add_supported_mode(climate::CLIMATE_MODE_HEAT);
+    t.add_supported_mode(climate::CLIMATE_MODE_COOL);
+    t.add_supported_mode(climate::CLIMATE_MODE_HEAT_COOL);
+
+    t.add_supported_fan_mode(climate::CLIMATE_FAN_AUTO);
+    t.add_supported_fan_mode(climate::CLIMATE_FAN_LOW);
+    t.add_supported_fan_mode(climate::CLIMATE_FAN_MEDIUM);
+    t.add_supported_fan_mode(climate::CLIMATE_FAN_HIGH);
+
+    t.add_feature_flag(climate::ClimateTraitFlags::CLIMATE_TRAIT_CURRENT_TEMPERATURE);
+
     t.set_visual_min_temperature(16.0f);
     t.set_visual_max_temperature(30.0f);
     t.set_visual_temperature_step(0.5f);
-    t.set_supported_modes({
-      climate::CLIMATE_MODE_OFF,
-      climate::CLIMATE_MODE_HEAT,
-      climate::CLIMATE_MODE_COOL,
-      climate::CLIMATE_MODE_HEAT_COOL,
-    });
-    t.set_supported_fan_modes({
-      climate::CLIMATE_FAN_AUTO,
-      climate::CLIMATE_FAN_LOW,
-      climate::CLIMATE_FAN_MEDIUM,
-      climate::CLIMATE_FAN_HIGH,
-    });
+
     return t;
   }
 
   void control(const climate::ClimateCall &call) override {
     bool changed = false;
 
-    // Arm the write-pending guard synchronously before anything else,
-    // so no Modbus poll can slip in and overwrite globals.
+    // Arm write-pending guard synchronously before anything else so no
+    // Modbus poll can slip in and overwrite globals between now and the write.
     g_write_pending = 6;
 
     if (call.get_mode().has_value()) {
@@ -93,7 +93,6 @@ class FancoilClimate : public climate::Climate, public Component {
 
     if (changed) {
       this->publish_state();
-      // Call write_all_registers directly -- no script scheduling delay.
       if (write_cb_) write_cb_();
     }
   }
