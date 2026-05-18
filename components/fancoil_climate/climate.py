@@ -13,7 +13,7 @@ FancoilClimate = fancoil_climate_ns.class_(
 
 # Inherit the full base CLIMATE_SCHEMA unchanged -- on_control, on_state,
 # visual, etc. are all already defined there. We add nothing extra.
-CONFIG_SCHEMA = climate.CLIMATE_SCHEMA.extend(
+CONFIG_SCHEMA = climate._CLIMATE_SCHEMA.extend(
     {cv.GenerateID(): cv.declare_id(FancoilClimate)}
 ).extend(cv.COMPONENT_SCHEMA)
 
