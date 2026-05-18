@@ -11,9 +11,7 @@ FancoilClimate = fancoil_climate_ns.class_(
 )
 
 CONFIG_SCHEMA = climate.CLIMATE_SCHEMA.extend(
-    {
-        cv.GenerateID(): cv.declare_id(FancoilClimate),
-    }
+    {cv.GenerateID(): cv.declare_id(FancoilClimate)}
 ).extend(cv.COMPONENT_SCHEMA)
 
 
