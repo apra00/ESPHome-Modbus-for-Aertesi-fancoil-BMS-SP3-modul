@@ -1,5 +1,4 @@
 #pragma once
-
 #include "esphome/core/component.h"
 #include "esphome/components/climate/climate.h"
 
@@ -8,7 +7,6 @@ namespace fancoil_climate {
 
 class FancoilClimate : public climate::Climate, public Component {
  public:
-
   climate::ClimateTraits traits() override {
     auto t = climate::ClimateTraits();
     t.set_supports_current_temperature(true);
@@ -31,51 +29,44 @@ class FancoilClimate : public climate::Climate, public Component {
     return t;
   }
 
-  // Called from raw_* sensor on_value lambdas after every successful poll.
-  void sync_state_from_globals(
-      int system_status, int operation_mode, int fan_speed,
-      int setpoint_raw, float current_temp) {
+  // Inject the write callback from YAML (has access to id() and globals).
+  void set_control_callback(std::function<void(const climate::ClimateCall &)> cb) {
+    control_cb_ = std::move(cb);
+  }
 
-    this->current_temperature = current_temp;
-    this->target_temperature  = setpoint_raw / 10.0f;
+  // Called from every raw_* sensor on_value that feeds the climate card.
+  void sync_from_globals(int sys, int mode, int fan, int sp_raw, float cur_temp) {
+    current_temperature = cur_temp;
+    target_temperature  = sp_raw / 10.0f;
 
-    switch (fan_speed) {
-      case 1:  this->fan_mode = climate::CLIMATE_FAN_LOW;    break;
-      case 2:  this->fan_mode = climate::CLIMATE_FAN_MEDIUM; break;
-      case 3:  this->fan_mode = climate::CLIMATE_FAN_HIGH;   break;
-      default: this->fan_mode = climate::CLIMATE_FAN_AUTO;   break;
+    switch (fan) {
+      case 1:  fan_mode = climate::CLIMATE_FAN_LOW;    break;
+      case 2:  fan_mode = climate::CLIMATE_FAN_MEDIUM; break;
+      case 3:  fan_mode = climate::CLIMATE_FAN_HIGH;   break;
+      default: fan_mode = climate::CLIMATE_FAN_AUTO;   break;
     }
 
-    if (system_status == 0) {
+    if (sys == 0) {
       this->mode = climate::CLIMATE_MODE_OFF;
-    } else if (system_status == 1) {
+    } else if (sys == 1) {
       this->mode = climate::CLIMATE_MODE_FAN_ONLY;
     } else {
-      switch (operation_mode) {
+      switch (mode) {
         case 0:  this->mode = climate::CLIMATE_MODE_COOL; break;
         case 1:  this->mode = climate::CLIMATE_MODE_HEAT; break;
         default: this->mode = climate::CLIMATE_MODE_AUTO; break;
       }
     }
-
-    this->publish_state();
-  }
-
-  // Callback type so the YAML lambda can inject the write logic without
-  // the component needing to know about globals or scripts directly.
-  void set_control_callback(std::function<void(climate::ClimateCall)> cb) {
-    this->control_cb_ = cb;
+    publish_state();
   }
 
  protected:
   void control(const climate::ClimateCall &call) override {
-    if (this->control_cb_) {
-      this->control_cb_(call);
-    }
+    if (control_cb_) control_cb_(call);
   }
 
  private:
-  std::function<void(climate::ClimateCall)> control_cb_;
+  std::function<void(const climate::ClimateCall &)> control_cb_;
 };
 
 }  // namespace fancoil_climate
