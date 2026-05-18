@@ -9,7 +9,7 @@ AUTO_LOAD = ["climate"]
 fancoil_climate_ns = cg.esphome_ns.namespace("fancoil_climate")
 FancoilClimate = fancoil_climate_ns.class_("FancoilClimate", climate.Climate, cg.Component)
 
-CONFIG_SCHEMA = climate.CLIMATE_SCHEMA.extend(
+CONFIG_SCHEMA = climate._CLIMATE_SCHEMA.extend(
     {
         cv.GenerateID(): cv.declare_id(FancoilClimate),
     }
