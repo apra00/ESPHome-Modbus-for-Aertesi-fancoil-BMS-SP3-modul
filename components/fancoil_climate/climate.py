@@ -20,7 +20,7 @@ FancoilControlTrigger = fancoil_climate_ns.class_(
 
 CONF_ON_CONTROL = "on_control"
 
-CONFIG_SCHEMA = climate.CLIMATE_SCHEMA.extend(
+CONFIG_SCHEMA = climate._CLIMATE_SCHEMA.extend(
     {
         cv.GenerateID(): cv.declare_id(FancoilClimate),
         cv.Optional(CONF_ON_CONTROL): automation.validate_automation(
