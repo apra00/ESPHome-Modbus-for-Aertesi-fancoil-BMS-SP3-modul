@@ -11,9 +11,11 @@ FancoilClimate = fancoil_climate_ns.class_("FancoilClimate", climate.Climate, cg
 
 ClimateCallConstRef = climate.ClimateCall.operator("const").operator("ref")
 
+Trigger = cg.esphome_ns.class_("Trigger")
+
 on_control_trigger = fancoil_climate_ns.class_(
     "FancoilClimateControlTrigger",
-    cg.Trigger.template(ClimateCallConstRef),
+    Trigger.template(ClimateCallConstRef),
 )
 
 CONFIG_SCHEMA = climate._CLIMATE_SCHEMA.extend(
