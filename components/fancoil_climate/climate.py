@@ -9,22 +9,16 @@ AUTO_LOAD = ["climate"]
 
 fancoil_climate_ns = cg.esphome_ns.namespace("fancoil_climate")
 FancoilClimate = fancoil_climate_ns.class_("FancoilClimate", climate.Climate, cg.Component)
+FancoilClimateControlTrigger = fancoil_climate_ns.class_("FancoilClimateControlTrigger")
 
-ClimateCallConstRef = climate.ClimateCall.operator("const").operator("ref")
-
-Trigger = cg.esphome_ns.class_("Trigger")
-
-on_control_trigger = fancoil_climate_ns.class_(
-    "FancoilClimateControlTrigger",
-    Trigger.template(ClimateCallConstRef),
-)
+CONF_ON_CONTROL = "on_control"
 
 CONFIG_SCHEMA = climate._CLIMATE_SCHEMA.extend(
     {
         cv.GenerateID(): cv.declare_id(FancoilClimate),
-        cv.Optional("on_control"): validate_automation(
+        cv.Optional(CONF_ON_CONTROL): validate_automation(
             {
-                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(on_control_trigger),
+                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(FancoilClimateControlTrigger),
             }
         ),
     }
@@ -36,6 +30,10 @@ async def to_code(config):
     await cg.register_component(var, config)
     await climate.register_climate(var, config)
 
-    for conf in config.get("on_control", []):
+    for conf in config.get(CONF_ON_CONTROL, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
-        await build_automation(trigger, [(ClimateCallConstRef, "x")], conf)
+        await build_automation(
+            trigger,
+            [(climate.ClimateCall.operator("const").operator("ref"), "x")],
+            conf,
+        )
