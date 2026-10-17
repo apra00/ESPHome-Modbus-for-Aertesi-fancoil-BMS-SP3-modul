@@ -10,7 +10,7 @@ class FancoilClimate : public climate::Climate, public Component {
 
   climate::ClimateTraits traits() override {
     auto t = climate::ClimateTraits();
-    t.set_supports_current_temperature(true);
+    t.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE);
     t.set_supported_modes({
       climate::CLIMATE_MODE_OFF,
       climate::CLIMATE_MODE_COOL,

@@ -110,7 +110,7 @@ api:
 
 ota:
   platform: esphome
-  password: !secret ota_password
+  encryption: {}
 
 uart:
   id: modbus_uart
@@ -132,7 +132,6 @@ modbus_controller:
     modbus_id: modbus_bus
     setup_priority: -10
     update_interval: 5s
-    command_throttle: 100ms
 
 ################################################################################
 # SCRIPTS
@@ -469,7 +468,7 @@ text_sensor:
     raw_encode: HEXBYTES
     entity_category: diagnostic
     lambda: |-
-      uint16_t val = modbus_controller::word_from_hex_str(x, 0);
+      uint16_t val = modbus::helpers::word_from_hex_str(x, 0);
       switch (val) {
         case 0: return std::string("OFF");
         case 1: return std::string("Min");
@@ -486,7 +485,7 @@ text_sensor:
     raw_encode: HEXBYTES
     entity_category: diagnostic
     lambda: |-
-      uint16_t val = modbus_controller::word_from_hex_str(x, 0);
+      uint16_t val = modbus::helpers::word_from_hex_str(x, 0);
       switch (val) {
         case 0: return std::string("Summer (Cooling)");
         case 1: return std::string("Winter (Heating)");
