@@ -438,6 +438,8 @@ binary_sensor:
     register_type: holding
     bitmask: 0x1
     device_class: opening
+    on_state:
+      - lambda: 'id(climate_fancoil).set_valve_open(x);'
 
   - platform: modbus_controller
     modbus_controller_id: fancoil
@@ -491,6 +493,8 @@ text_sensor:
         case 1: return std::string("Winter (Heating)");
         default: return str_sprintf("Unknown (%d)", val);
       }
+    on_value:
+      - lambda: 'id(climate_fancoil).set_heating_season(x == "Winter (Heating)");'
 
 ################################################################################
 # SELECT
