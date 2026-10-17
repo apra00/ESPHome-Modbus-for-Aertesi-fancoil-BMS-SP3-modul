@@ -143,21 +143,21 @@ script:
     then:
       - lambda: |-
           id(g_write_lock) = true;
-      - lambda: |-
-          std::vector<uint16_t> payload = {
-            (uint16_t) id(g_system_status),      // addr 1096
-            (uint16_t) id(g_operation_mode),     // addr 1097
-            (uint16_t) id(g_fan_speed),          // addr 1098
-            (uint16_t) id(g_setpoint),           // addr 1099  (x10)
-            0,                                   // addr 1100  not used
-            0,                                   // addr 1101  not used
-            (uint16_t) id(g_setpoint_priority),  // addr 1102
-            (uint16_t) id(g_supervision_active), // addr 1103
-          };
-          modbus_controller::ModbusCommandItem cmd =
-            modbus_controller::ModbusCommandItem::create_write_multiple_command(
-              id(fancoil), 1096, 8, payload);
-          id(fancoil)->queue_command(cmd);
+      - modbus_client.write_multiple_registers:
+          modbus_id: modbus_bus
+          address: ${modbus_address}
+          start_address: 1096
+          values: !lambda |-
+            return std::vector<uint16_t>{
+              (uint16_t) id(g_system_status),      // addr 1096
+              (uint16_t) id(g_operation_mode),     // addr 1097
+              (uint16_t) id(g_fan_speed),          // addr 1098
+              (uint16_t) id(g_setpoint),           // addr 1099  (x10)
+              0,                                   // addr 1100  not used
+              0,                                   // addr 1101  not used
+              (uint16_t) id(g_setpoint_priority),  // addr 1102
+              (uint16_t) id(g_supervision_active), // addr 1103
+            };
       - script.execute: unlock_write_lock
 
   - id: unlock_write_lock
