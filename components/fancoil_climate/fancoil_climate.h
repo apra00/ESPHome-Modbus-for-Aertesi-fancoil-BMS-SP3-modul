@@ -27,7 +27,8 @@ class FancoilClimate : public climate::Climate, public Component {
     });
     t.set_visual_min_temperature(16);
     t.set_visual_max_temperature(30);
-    t.set_visual_temperature_step(0.5f);
+    t.set_visual_target_temperature_step(0.5f);   // setpoint moves in 0.5 °C
+    t.set_visual_current_temperature_step(0.1f);  // probe reports 0.1 °C
     return t;
   }
 
